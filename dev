@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+
+# Determina si stdout es un terminal
+if test -t 1; then
+  # Determinar si se admiten colores
+  colors=$(tput colors)
+
+  if test -n "$colors" && test "$colors" -ge 8; then
+    BOLD="$(tput bold)"
+    YELLOW="$(tput setaf 3)"
+    GREEN="$(tput setaf 2)"
+    NC="$(tput sgr0)"
+  fi
+fi
+
+function display_help {
+  echo 'Dev wrapper'
+  echo
+  echo "${YELLOW}Usage:${NC}" >&2
+  echo "  dev COMMAND [options] [arguments]"
+  echo
+  echo "Los comandos desconocidos se pasan al binario docker-compose o podman-compose."
+  echo
+  echo "${YELLOW}Comandos Podman Compose:${NC}"
+  echo "  ${GREEN}dev up${NC}                 Inicia la aplicación"
+  echo "  ${GREEN}dev up -d${NC}              Inicia la aplicación en segundo plano."
+  echo "  ${GREEN}dev stop${NC}               Detiene la aplicación"
+  echo "  ${GREEN}dev restart${NC}            Reinicia la aplicación"
+  echo "  ${GREEN}dev ps${NC}                 Muestra el estado de todos los contenedores"
+  echo "  ${GREEN}dev build --no-cache${NC}   Reconstruye todos los contenedores"
+  echo
+  echo "${YELLOW}Comandos PHP:${NC}"
+  echo "  ${GREEN}dev php ...${NC}   Ejecuta un fragmento de código PHP"
+  echo
+  echo "${YELLOW}Comandos Composer:${NC}"
+  echo "  ${GREEN}dev composer ...${NC}   Ejecuta un comando de Composer"
+  echo
+  echo "${YELLOW}Comandos de base de datos:${NC}"
+  echo "  ${GREEN}dev psql${NC}   Inicia una sesión CLI de PostgreSQL dentro del contenedor «database»"
+  echo
+  echo "${YELLOW}CLI del contenedor:${NC}"
+  echo "  ${GREEN}dev shell${NC}   Inicia una sesión de shell dentro del contenedor"
+  echo "  ${GREEN}dev bash${NC}    Alias para 'sail shell'"
+  echo
+  echo "${YELLOW}Binarios:${NC}"
+  echo "  ${GREEN}dev bin ...${NC}   Ejecuta los scripts binarios de Composer desde el directorio vendor/bin"
+  echo "  ${GREEN}dev run ...${NC}   Ejecuta un comando dentro del contenedor"
+  echo
+  echo "${YELLOW}Binarios especificos:${NC}"
+  echo "  ${GREEN}dev migrate ...${NC}   Ejecuta las migraciones de Phinx"
+  echo "  ${GREEN}dev seed ...${NC}      Ejecuta los seeders de Phinx"
+}
+
+# Maneja el comando «help»
+if [ $# -gt 0 ]; then
+    if [ "$1" == "help" ] || [ "$1" == "-h" ] || [ "$1" == "-help" ] || [ "$1" == "--help" ]; then
+        display_help
+        exit 0
+    fi
+else
+    display_help
+    exit 1
+fi
+
+# Incluye el archivo '.env' para que las variables de entorno estén disponibles.
+if [ -f ./.env ]; then
+  source ./.env;
+fi
+
+export APP_SERVICE=${APP_SERVICE:-"backend"}
+
+function dev_is_not_running {
+  echo "${BOLD}Dev no se está ejecutando.${NC}" >&2
+  echo "" >&2
+  echo "${BOLD}Puede usar Dev con los siguientes comandos:${NC} './dev up' or './dev up -d'" >&2
+
+  exit 1
+}
+
+# Define el prefijo del comando Podman Compose
+if podman compose &> /dev/null; then
+    PODMAN_COMPOSE=(podman compose)
+else
+    PODMAN_COMPOSE=(podman-compose)
+fi
+
+EXEC="yes"
+
+if [ -z "$DEV_SKIP_CHECKS" ]; then
+  # Asegura que podman esté ejecutándose
+  if ! podman info > /dev/null 2>&1; then
+    echo "${BOLD}Podman no se está ejecutando.${NC}" >&2
+
+    exit 1
+  fi
+
+  # Determina si Dev esta ejecutándose actualmente
+  if "${PODMAN_COMPOSE[@]}" ps "$APP_SERVICE" 2>&1 | grep 'Exit\|exited'; then
+    echo "${BOLD}Apagando procesos Dev antiguos...${NC}" >&2
+
+    "${PODMAN_COMPOSE[@]}" down > /dev/null 2>&1
+
+    EXEC="no"
+  elif [ -z "$("${PODMAN_COMPOSE[@]}" ps -q)" ]; then
+    EXEC="no"
+  fi
+fi
+
+ARGS=()
+
+# Ejecuta los comandos de PHP con el binario que se encuentra dentro del contenedor de la aplicación
+if [ "$1" == "php" ]; then
+  shift 1
+
+  if [ "$EXEC" == "yes" ]; then
+    ARGS+=(exec)
+    [ ! -t 0 ] && ARGS+=(-T)
+    ARGS+=("$APP_SERVICE" "php")
+  else
+    dev_is_not_running
+  fi
+
+# Inicia un shell Bash dentro del contenedor de la aplicación
+elif [ "$1" == "shell" ] || [ "$1" == "bash" ]; then
+  shift 1
+
+  if [ "$EXEC" == "yes" ]; then
+    ARGS+=(exec)
+    [ ! -t 0 ] && ARGS+=(-T)
+    ARGS+=("$APP_SERVICE" bash)
+  else
+    dev_is_not_running
+  fi
+
+# Inicia una sesión de terminal CLI de PostgreSQL dentro del contenedor «database»
+elif [ "$1" == "psql" ]; then
+  shift 1
+
+  if [ "$EXEC" == "yes" ]; then
+    ARGS+=(exec)
+    [ ! -t 0 ] && ARGS+=(-T)
+    ARGS+=(database bash -c)
+    ARGS+=("psql -U \${POSTGRES_USER} \${POSTGRES_DB}")
+  else
+    dev_is_not_running
+  fi
+
+# Ejecuta los comandos de composer con el binario que se encuentra dentro del contenedor de la aplicación
+elif [ "$1" == "composer" ]; then
+  shift 1
+
+  if [ "$EXEC" == "yes" ]; then
+    ARGS+=(exec)
+    [ ! -t 0 ] && ARGS+=(-T)
+    ARGS+=("$APP_SERVICE" "composer")
+  else
+    dev_is_not_running
+  fi
+
+# Ejecuta los comandos dentro del contenedor de la aplicación
+elif [ "$1" == "run" ]; then
+  shift 1
+
+  if [ "$EXEC" == "yes" ]; then
+    CMD=$1
+    shift 1
+    ARGS+=(exec)
+    [ ! -t 0 ] && ARGS+=(-T)
+    ARGS+=("$APP_SERVICE" "$CMD")
+  else
+    dev_is_not_running
+  fi
+
+# Ejecuta los binarios vendor dentro del contenedor de la aplicación
+elif [ "$1" == "bin" ]; then
+  shift 1
+
+  if [ "$EXEC" == "yes" ]; then
+    CMD=$1
+    shift 1
+    ARGS+=(exec)
+    [ ! -t 0 ] && ARGS+=(-T)
+    ARGS+=("$APP_SERVICE" ./vendor/bin/"$CMD")
+  else
+    dev_is_not_running
+  fi
+
+# Ejecuta ciertos commandos de Phinx dentro del contenedor de la aplicación
+elif [ "$1" == "migrate" ]; then
+  shift 1
+
+  if [ "$EXEC" == "yes" ]; then
+    ARGS+=(exec -u www-data)
+    [ ! -t 0 ] && ARGS+=(-T)
+    ARGS+=("$APP_SERVICE" ./vendor/bin/phinx migrate)
+  else
+    dev_is_not_running
+  fi
+
+elif [ "$1" == "seed" ]; then
+  shift 1
+
+  if [ "$EXEC" == "yes" ]; then
+    ARGS+=(exec -u www-data)
+    [ ! -t 0 ] && ARGS+=(-T)
+    ARGS+=("$APP_SERVICE" ./vendor/bin/phinx seed:run)
+  else
+    dev_is_not_running
+  fi
+
+elif [ "$1" == "db:start" ]; then
+  shift 1
+
+  if [ "$EXEC" == "yes" ]; then
+    ARGS+=(exec -u www-data)
+    [ ! -t 0 ] && ARGS+=(-T)
+    ARGS+=("$APP_SERVICE" bash -c './vendor/bin/phinx migrate;./vendor/bin/phinx seed:run')
+  else
+    dev_is_not_running
+  fi
+
+elif [ "$1" == "db:reset" ]; then
+  shift 1
+
+  if [ "$EXEC" == "yes" ]; then
+    ARGS+=(exec -u www-data)
+    [ ! -t 0 ] && ARGS+=(-T)
+    ARGS+=("$APP_SERVICE" bash -c './vendor/bin/phinx migrate -t 0;./vendor/bin/phinx migrate;./vendor/bin/phinx seed:run')
+  else
+    dev_is_not_running
+  fi
+
+fi
+
+# Ejecuta Podman Compose con los argumentos definidos
+echo "${PODMAN_COMPOSE[@]}" "${ARGS[@]}"
+"${PODMAN_COMPOSE[@]}" "${ARGS[@]}" "$@"

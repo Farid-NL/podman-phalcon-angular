@@ -1,0 +1,6 @@
+backend/
+frontend/
+!frontend/package*.json
+!frontend/.npmrc
+.env*
+dev

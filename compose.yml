@@ -1,0 +1,82 @@
+services:
+  frontend:
+    container_name: dinero_electronico-frontend
+    user: 1000:1000
+    userns_mode: 'keep-id:uid=1000,gid=1000'
+    build:
+      context: ./.container
+      dockerfile: frontend.containerfile
+      args:
+        NODE_V: ${NODE_VERSION:-lts}
+    ports:
+      - '${ANGULAR_PORT:-4200}:4200'
+    volumes:
+      # Monta el código fuente de la app. El ':Z' es crucial en sistemas SELinux
+      # (como algunos Linux corporativos) para permitir que el contenedor acceda
+      # a los archivos montados con los permisos correctos.
+      - ./frontend:/usr/src/app:Z
+    networks:
+      - dinero_electronico
+
+  backend:
+    container_name: dinero_electronico-backend
+    # Levanta el contenedor como root para que Apache pueda iniciar sin problemas.
+    user: 0:0
+    # Asegura que Apache (uid=33, gid=33) pueda interactuar correctamente con los archivos en el volumen.
+    userns_mode: 'keep-id:uid=33,gid=33'
+    build:
+      context: ./.container
+      dockerfile: backend.containerfile
+      args:
+        PHP_V: ${PHP_VERSION:-8.3}
+        PHALCON_V: ${PHALCON_VERSION:-5.9.3}
+        AZURE_PERSONAL_TOKEN: ${AZURE_PERSONAL_TOKEN}
+    ports:
+      - '${APACHE_PORT:-8080}:80'
+    environment:
+      TZ: ${TIMEZONE:-America/Mexico_City}
+      XDEBUG_MODE: ${XDEBUG_MODE:-off}
+      XDEBUG_CONFIG: ${XDEBUG_CONFIG:-client_host=host.containers.internal}
+    volumes:
+      # Monta el código fuente de la aplicación. El ':Z' es para la configuración
+      # de permisos en entornos SELinux (ver explicación en frontend).
+      - ./backend:/var/www/html:Z
+    networks:
+      - dinero_electronico
+    depends_on:
+      - database
+
+  database:
+    container_name: dinero_electronico-database
+    image: postgres:17
+    ports:
+      - '${DB_PORT:-5432}:5432'
+    environment:
+      #POSTGRES_INITDB_ARGS: "--encoding=SQL_ASCII"
+      TZ: ${TIMEZONE:-America/Mexico_City}
+      PGTZ: ${TIMEZONE:-America/Mexico_City}
+      #PGPASSWORD: '${DB_PASSWORD}'
+      POSTGRES_DB: '${DB_NAME}'
+      POSTGRES_USER: '${DB_USERNAME}'
+      POSTGRES_PASSWORD: '${DB_PASSWORD}'
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - dinero_electronico
+    healthcheck:
+      # El healthcheck verifica si la base de datos está realmente lista para
+      # aceptar conexiones antes de que otros servicios (como el backend)
+      # intenten usarla. Es más fiable que solo 'depends_on'.
+      test: ["CMD", "pg_isready", "-q", "-d", "${DB_NAME}", "-U", "${DB_USERNAME}"]
+      retries: 3
+      timeout: 5s
+    command: ["postgres", "-c", "timezone=America/Mazatlan"]
+
+networks:
+  dinero_electronico:
+    driver: bridge
+    name: dinero_electronico
+
+volumes:
+  db_data:
+    driver: local

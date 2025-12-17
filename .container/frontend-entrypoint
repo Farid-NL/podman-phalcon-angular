@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# Si node_modules no existe o está vacío, instala dependencias
+if [ ! -d "node_modules" ] || [ -z "$(ls -A node_modules 2>/dev/null)" ]; then
+  echo "🔧 Instalando dependencias dentro del contenedor..."
+  npm install --legacy-peer-deps
+else
+  echo "✅ Dependencias detectadas, omitiendo instalación."
+fi
+
+# Finalmente ejecuta Angular
+echo "🚀 Iniciando servidor de desarrollo..."
+exec npm run start:local -- --host 0.0.0.0
